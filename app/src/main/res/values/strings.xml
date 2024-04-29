@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">MP Hand Landmarker</string>
+    <string name="app_name">Gesture Recognition</string>
 
     <string name="media_pipe">MediaPipe</string>
 

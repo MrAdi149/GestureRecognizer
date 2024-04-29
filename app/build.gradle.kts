@@ -88,4 +88,6 @@ dependencies {
 }
 
 project.ext["ASSET_DIR"] = "$projectDir/src/main/assets/"
+project.ext["TEST_ASSETS_DIR"] = "$projectDir/src/androidTest/assets"
+
 apply(from = "download_tasks.gradle")

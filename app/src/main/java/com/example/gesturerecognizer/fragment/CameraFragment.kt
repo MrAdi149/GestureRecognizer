@@ -1,46 +1,38 @@
 package com.example.gesturerecognizer.fragment
 
+
 import android.annotation.SuppressLint
 import android.content.res.Configuration
 import android.os.Bundle
 import android.util.Log
 import android.view.LayoutInflater
+import com.example.gesturerecognizer.R
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.Toast
-import androidx.camera.core.Preview
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Camera
-import androidx.camera.core.AspectRatio
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.navigation.Navigation
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.example.gesturerecognizer.GestureRecognizerResultsAdapter
 import com.example.gesturerecognizer.HandLandmarkerHelper
-import com.example.gesturerecognizer.HandLandmarkerHelper.Companion.FINGER_BASE_INDEXES
-import com.example.gesturerecognizer.HandLandmarkerHelper.Companion.FINGER_RAISED_THRESHOLD
-import com.example.gesturerecognizer.HandLandmarkerHelper.Companion.FINGER_TIP_INDEXES
-import com.example.gesturerecognizer.HandLandmarkerHelper.Companion.NUM_FINGERS
-import com.example.gesturerecognizer.MainActivity
 import com.example.gesturerecognizer.MainViewModel
-import com.example.gesturerecognizer.R
 import com.example.gesturerecognizer.databinding.ActivityCameraFragmentBinding
-import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import com.google.mediapipe.tasks.vision.core.RunningMode
-import java.util.Locale
+import java.util.*
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import kotlin.math.sqrt
 
-class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
+class CameraFragment : Fragment(),
+    HandLandmarkerHelper.GestureRecognizerListener {
 
     companion object {
-        private const val TAG = "Hand Landmarker"
+        private const val TAG = "Hand gesture recognizer"
     }
 
     private var _fragmentCameraBinding: ActivityCameraFragmentBinding? = null
@@ -48,8 +40,14 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     private val fragmentCameraBinding
         get() = _fragmentCameraBinding!!
 
-    private lateinit var handLandmarkerHelper: HandLandmarkerHelper
+    private lateinit var gestureRecognizerHelper: HandLandmarkerHelper
     private val viewModel: MainViewModel by activityViewModels()
+    private var defaultNumResults = 1
+    private val gestureRecognizerResultAdapter: GestureRecognizerResultsAdapter by lazy {
+        GestureRecognizerResultsAdapter().apply {
+            updateAdapterSize(defaultNumResults)
+        }
+    }
     private var preview: Preview? = null
     private var imageAnalyzer: ImageAnalysis? = null
     private var camera: Camera? = null
@@ -69,26 +67,25 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             ).navigate(R.id.action_camera_to_permissions)
         }
 
-        // Start the HandLandmarkerHelper again when users come back
+        // Start the GestureRecognizerHelper again when users come back
         // to the foreground.
         backgroundExecutor.execute {
-            if (handLandmarkerHelper.isClose()) {
-                handLandmarkerHelper.setupHandLandmarker()
+            if (gestureRecognizerHelper.isClosed()) {
+                gestureRecognizerHelper.setupGestureRecognizer()
             }
         }
     }
 
     override fun onPause() {
         super.onPause()
-        if(this::handLandmarkerHelper.isInitialized) {
-            viewModel.setMaxHands(handLandmarkerHelper.maxNumHands)
-            viewModel.setMinHandDetectionConfidence(handLandmarkerHelper.minHandDetectionConfidence)
-            viewModel.setMinHandTrackingConfidence(handLandmarkerHelper.minHandTrackingConfidence)
-            viewModel.setMinHandPresenceConfidence(handLandmarkerHelper.minHandPresenceConfidence)
-            viewModel.setDelegate(handLandmarkerHelper.currentDelegate)
+        if (this::gestureRecognizerHelper.isInitialized) {
+            viewModel.setMinHandDetectionConfidence(gestureRecognizerHelper.minHandDetectionConfidence)
+            viewModel.setMinHandTrackingConfidence(gestureRecognizerHelper.minHandTrackingConfidence)
+            viewModel.setMinHandPresenceConfidence(gestureRecognizerHelper.minHandPresenceConfidence)
+            viewModel.setDelegate(gestureRecognizerHelper.currentDelegate)
 
-            // Close the HandLandmarkerHelper and release resources
-            backgroundExecutor.execute { handLandmarkerHelper.clearHandLandmarker() }
+            // Close the Gesture Recognizer helper and release resources
+            backgroundExecutor.execute { gestureRecognizerHelper.clearGestureRecognizer() }
         }
     }
 
@@ -117,6 +114,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     @SuppressLint("MissingPermission")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+        with(fragmentCameraBinding.recyclerviewResults) {
+            layoutManager = LinearLayoutManager(requireContext())
+            adapter = gestureRecognizerResultAdapter
+        }
 
         // Initialize our background executor
         backgroundExecutor = Executors.newSingleThreadExecutor()
@@ -127,17 +128,17 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             setUpCamera()
         }
 
-        // Create the HandLandmarkerHelper that will handle the inference
+        // Create the Hand Gesture Recognition Helper that will handle the
+        // inference
         backgroundExecutor.execute {
-            handLandmarkerHelper = HandLandmarkerHelper(
+            gestureRecognizerHelper = HandLandmarkerHelper(
                 context = requireContext(),
                 runningMode = RunningMode.LIVE_STREAM,
                 minHandDetectionConfidence = viewModel.currentMinHandDetectionConfidence,
                 minHandTrackingConfidence = viewModel.currentMinHandTrackingConfidence,
                 minHandPresenceConfidence = viewModel.currentMinHandPresenceConfidence,
-                maxNumHands = viewModel.currentMaxHands,
                 currentDelegate = viewModel.currentDelegate,
-                handLandmarkerHelperListener = this
+                gestureRecognizerListener = this
             )
         }
 
@@ -147,8 +148,6 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
 
     private fun initBottomSheetControls() {
         // init bottom sheet settings
-        fragmentCameraBinding.bottomSheetLayout.maxHandsValue.text =
-            viewModel.currentMaxHands.toString()
         fragmentCameraBinding.bottomSheetLayout.detectionThresholdValue.text =
             String.format(
                 Locale.US, "%.2f", viewModel.currentMinHandDetectionConfidence
@@ -164,66 +163,48 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
 
         // When clicked, lower hand detection score threshold floor
         fragmentCameraBinding.bottomSheetLayout.detectionThresholdMinus.setOnClickListener {
-            if (handLandmarkerHelper.minHandDetectionConfidence >= 0.2) {
-                handLandmarkerHelper.minHandDetectionConfidence -= 0.1f
+            if (gestureRecognizerHelper.minHandDetectionConfidence >= 0.2) {
+                gestureRecognizerHelper.minHandDetectionConfidence -= 0.1f
                 updateControlsUi()
             }
         }
 
         // When clicked, raise hand detection score threshold floor
         fragmentCameraBinding.bottomSheetLayout.detectionThresholdPlus.setOnClickListener {
-            if (handLandmarkerHelper.minHandDetectionConfidence <= 0.8) {
-                handLandmarkerHelper.minHandDetectionConfidence += 0.1f
+            if (gestureRecognizerHelper.minHandDetectionConfidence <= 0.8) {
+                gestureRecognizerHelper.minHandDetectionConfidence += 0.1f
                 updateControlsUi()
             }
         }
 
         // When clicked, lower hand tracking score threshold floor
         fragmentCameraBinding.bottomSheetLayout.trackingThresholdMinus.setOnClickListener {
-            if (handLandmarkerHelper.minHandTrackingConfidence >= 0.2) {
-                handLandmarkerHelper.minHandTrackingConfidence -= 0.1f
+            if (gestureRecognizerHelper.minHandTrackingConfidence >= 0.2) {
+                gestureRecognizerHelper.minHandTrackingConfidence -= 0.1f
                 updateControlsUi()
             }
         }
 
         // When clicked, raise hand tracking score threshold floor
         fragmentCameraBinding.bottomSheetLayout.trackingThresholdPlus.setOnClickListener {
-            if (handLandmarkerHelper.minHandTrackingConfidence <= 0.8) {
-                handLandmarkerHelper.minHandTrackingConfidence += 0.1f
+            if (gestureRecognizerHelper.minHandTrackingConfidence <= 0.8) {
+                gestureRecognizerHelper.minHandTrackingConfidence += 0.1f
                 updateControlsUi()
             }
         }
 
         // When clicked, lower hand presence score threshold floor
         fragmentCameraBinding.bottomSheetLayout.presenceThresholdMinus.setOnClickListener {
-            if (handLandmarkerHelper.minHandPresenceConfidence >= 0.2) {
-                handLandmarkerHelper.minHandPresenceConfidence -= 0.1f
+            if (gestureRecognizerHelper.minHandPresenceConfidence >= 0.2) {
+                gestureRecognizerHelper.minHandPresenceConfidence -= 0.1f
                 updateControlsUi()
             }
         }
 
         // When clicked, raise hand presence score threshold floor
         fragmentCameraBinding.bottomSheetLayout.presenceThresholdPlus.setOnClickListener {
-            if (handLandmarkerHelper.minHandPresenceConfidence <= 0.8) {
-                handLandmarkerHelper.minHandPresenceConfidence += 0.1f
-                updateControlsUi()
-            }
-        }
-
-        // When clicked, reduce the number of hands that can be detected at a
-        // time
-        fragmentCameraBinding.bottomSheetLayout.maxHandsMinus.setOnClickListener {
-            if (handLandmarkerHelper.maxNumHands > 1) {
-                handLandmarkerHelper.maxNumHands--
-                updateControlsUi()
-            }
-        }
-
-        // When clicked, increase the number of hands that can be detected
-        // at a time
-        fragmentCameraBinding.bottomSheetLayout.maxHandsPlus.setOnClickListener {
-            if (handLandmarkerHelper.maxNumHands < 2) {
-                handLandmarkerHelper.maxNumHands++
+            if (gestureRecognizerHelper.minHandPresenceConfidence <= 0.8) {
+                gestureRecognizerHelper.minHandPresenceConfidence += 0.1f
                 updateControlsUi()
             }
         }
@@ -239,10 +220,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                     p0: AdapterView<*>?, p1: View?, p2: Int, p3: Long
                 ) {
                     try {
-                        handLandmarkerHelper.currentDelegate = p2
+                        gestureRecognizerHelper.currentDelegate = p2
                         updateControlsUi()
                     } catch(e: UninitializedPropertyAccessException) {
-                        Log.e(TAG, "HandLandmarkerHelper has not been initialized yet.")
+                        Log.e(TAG, "GestureRecognizerHelper has not been initialized yet.")
+
                     }
                 }
 
@@ -252,35 +234,33 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             }
     }
 
-    // Update the values displayed in the bottom sheet. Reset Handlandmarker
+    // Update the values displayed in the bottom sheet. Reset recognition
     // helper.
     private fun updateControlsUi() {
-        fragmentCameraBinding.bottomSheetLayout.maxHandsValue.text =
-            handLandmarkerHelper.maxNumHands.toString()
         fragmentCameraBinding.bottomSheetLayout.detectionThresholdValue.text =
             String.format(
                 Locale.US,
                 "%.2f",
-                handLandmarkerHelper.minHandDetectionConfidence
+                gestureRecognizerHelper.minHandDetectionConfidence
             )
         fragmentCameraBinding.bottomSheetLayout.trackingThresholdValue.text =
             String.format(
                 Locale.US,
                 "%.2f",
-                handLandmarkerHelper.minHandTrackingConfidence
+                gestureRecognizerHelper.minHandTrackingConfidence
             )
         fragmentCameraBinding.bottomSheetLayout.presenceThresholdValue.text =
             String.format(
                 Locale.US,
                 "%.2f",
-                handLandmarkerHelper.minHandPresenceConfidence
+                gestureRecognizerHelper.minHandPresenceConfidence
             )
 
         // Needs to be cleared instead of reinitialized because the GPU
         // delegate needs to be initialized on the thread using it when applicable
         backgroundExecutor.execute {
-            handLandmarkerHelper.clearHandLandmarker()
-            handLandmarkerHelper.setupHandLandmarker()
+            gestureRecognizerHelper.clearGestureRecognizer()
+            gestureRecognizerHelper.setupGestureRecognizer()
         }
         fragmentCameraBinding.overlay.clear()
     }
@@ -326,7 +306,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                 // The analyzer can then be assigned to the instance
                 .also {
                     it.setAnalyzer(backgroundExecutor) { image ->
-                        detectHand(image)
+                        recognizeHand(image)
                     }
                 }
 
@@ -347,14 +327,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
         }
     }
 
-    private fun detectHand(imageProxy: ImageProxy) {
-        handLandmarkerHelper.detectLiveStream(
+    private fun recognizeHand(imageProxy: ImageProxy) {
+        gestureRecognizerHelper.recognizeLiveStream(
             imageProxy = imageProxy,
-            isFrontCamera = cameraFacing == CameraSelector.LENS_FACING_FRONT
         )
     }
-
-
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
@@ -362,19 +339,25 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             fragmentCameraBinding.viewFinder.display.rotation
     }
 
-    // Update UI after hand have been detected. Extracts original
+    // Update UI after a hand gesture has been recognized. Extracts original
     // image height/width to scale and place the landmarks properly through
-    // OverlayView
-
-
-    // Update UI after hand have been detected. Extracts original
-    // image height/width to scale and place the landmarks properly through
-    // OverlayView
+    // OverlayView. Only one result is expected at a time. If two or more
+    // hands are seen in the camera frame, only one will be processed.
     override fun onResults(
         resultBundle: HandLandmarkerHelper.ResultBundle
     ) {
         activity?.runOnUiThread {
             if (_fragmentCameraBinding != null) {
+                // Show result of recognized gesture
+                val gestureCategories = resultBundle.results.first().gestures()
+                if (gestureCategories.isNotEmpty()) {
+                    gestureRecognizerResultAdapter.updateResults(
+                        gestureCategories.first()
+                    )
+                } else {
+                    gestureRecognizerResultAdapter.updateResults(emptyList())
+                }
+
                 fragmentCameraBinding.bottomSheetLayout.inferenceTimeVal.text =
                     String.format("%d ms", resultBundle.inferenceTime)
 
@@ -395,6 +378,8 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     override fun onError(error: String, errorCode: Int) {
         activity?.runOnUiThread {
             Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
+            gestureRecognizerResultAdapter.updateResults(emptyList())
+
             if (errorCode == HandLandmarkerHelper.GPU_ERROR) {
                 fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.setSelection(
                     HandLandmarkerHelper.DELEGATE_CPU, false

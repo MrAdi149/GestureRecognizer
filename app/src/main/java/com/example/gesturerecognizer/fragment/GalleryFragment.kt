@@ -1,5 +1,6 @@
 package com.example.gesturerecognizer.fragment
 
+import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
@@ -16,16 +17,19 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.example.gesturerecognizer.GestureRecognizerResultsAdapter
 import com.example.gesturerecognizer.HandLandmarkerHelper
 import com.example.gesturerecognizer.MainViewModel
 import com.example.gesturerecognizer.databinding.ActivityGalleryFragmentBinding
 import com.google.mediapipe.tasks.vision.core.RunningMode
-import java.util.Locale
+import java.util.*
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 
-class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
+class GalleryFragment : Fragment(),
+    HandLandmarkerHelper.GestureRecognizerListener {
 
     enum class MediaType {
         IMAGE,
@@ -36,8 +40,14 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     private var _fragmentGalleryBinding: ActivityGalleryFragmentBinding? = null
     private val fragmentGalleryBinding
         get() = _fragmentGalleryBinding!!
-    private lateinit var handLandmarkerHelper: HandLandmarkerHelper
+    private lateinit var HandLandmarkerHelper: HandLandmarkerHelper
     private val viewModel: MainViewModel by activityViewModels()
+    private var defaultNumResults = 1
+    private val gestureRecognizerResultsAdapter by lazy {
+        GestureRecognizerResultsAdapter().apply {
+            updateAdapterSize(defaultNumResults)
+        }
+    }
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ScheduledExecutorService
@@ -47,8 +57,8 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             // Handle the returned Uri
             uri?.let { mediaUri ->
                 when (val mediaType = loadMediaType(mediaUri)) {
-                    MediaType.IMAGE -> runDetectionOnImage(mediaUri)
-                    MediaType.VIDEO -> runDetectionOnVideo(mediaUri)
+                    MediaType.IMAGE -> runGestureRecognitionOnImage(mediaUri)
+                    MediaType.VIDEO -> runGestureRecognitionOnVideo(mediaUri)
                     MediaType.UNKNOWN -> {
                         updateDisplayView(mediaType)
                         Toast.makeText(
@@ -78,6 +88,10 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             getContent.launch(arrayOf("image/*", "video/*"))
         }
 
+        with(fragmentGalleryBinding.recyclerviewResults) {
+            layoutManager = LinearLayoutManager(requireContext())
+            adapter = gestureRecognizerResultsAdapter
+        }
         initBottomSheetControls()
     }
 
@@ -92,20 +106,7 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
 
     private fun initBottomSheetControls() {
         // init bottom sheet settings
-        fragmentGalleryBinding.bottomSheetLayout.maxHandsValue.text =
-            viewModel.currentMaxHands.toString()
-        fragmentGalleryBinding.bottomSheetLayout.detectionThresholdValue.text =
-            String.format(
-                Locale.US, "%.2f", viewModel.currentMinHandDetectionConfidence
-            )
-        fragmentGalleryBinding.bottomSheetLayout.trackingThresholdValue.text =
-            String.format(
-                Locale.US, "%.2f", viewModel.currentMinHandTrackingConfidence
-            )
-        fragmentGalleryBinding.bottomSheetLayout.presenceThresholdValue.text =
-            String.format(
-                Locale.US, "%.2f", viewModel.currentMinHandPresenceConfidence
-            )
+        updateControlsUi()
 
         // When clicked, lower detection score threshold floor
         fragmentGalleryBinding.bottomSheetLayout.detectionThresholdMinus.setOnClickListener {
@@ -163,22 +164,6 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             }
         }
 
-        // When clicked, reduce the number of objects that can be detected at a time
-        fragmentGalleryBinding.bottomSheetLayout.maxHandsMinus.setOnClickListener {
-            if (viewModel.currentMaxHands > 1) {
-                viewModel.setMaxHands(viewModel.currentMaxHands - 1)
-                updateControlsUi()
-            }
-        }
-
-        // When clicked, increase the number of objects that can be detected at a time
-        fragmentGalleryBinding.bottomSheetLayout.maxHandsPlus.setOnClickListener {
-            if (viewModel.currentMaxHands < 2) {
-                viewModel.setMaxHands(viewModel.currentMaxHands + 1)
-                updateControlsUi()
-            }
-        }
-
         // When clicked, change the underlying hardware used for inference. Current options are CPU
         // GPU, and NNAPI
         fragmentGalleryBinding.bottomSheetLayout.spinnerDelegate.setSelection(
@@ -205,6 +190,7 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     }
 
     // Update the values displayed in the bottom sheet. Reset detector.
+    @SuppressLint("NotifyDataSetChanged")
     private fun updateControlsUi() {
         if (fragmentGalleryBinding.videoView.isPlaying) {
             fragmentGalleryBinding.videoView.stopPlayback()
@@ -212,8 +198,6 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
         fragmentGalleryBinding.videoView.visibility = View.GONE
         fragmentGalleryBinding.imageResult.visibility = View.GONE
         fragmentGalleryBinding.overlay.clear()
-        fragmentGalleryBinding.bottomSheetLayout.maxHandsValue.text =
-            viewModel.currentMaxHands.toString()
         fragmentGalleryBinding.bottomSheetLayout.detectionThresholdValue.text =
             String.format(
                 Locale.US, "%.2f", viewModel.currentMinHandDetectionConfidence
@@ -229,10 +213,12 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
 
         fragmentGalleryBinding.overlay.clear()
         fragmentGalleryBinding.tvPlaceholder.visibility = View.VISIBLE
+        gestureRecognizerResultsAdapter.updateResults(null)
+        gestureRecognizerResultsAdapter.notifyDataSetChanged()
     }
 
     // Load and display the image.
-    private fun runDetectionOnImage(uri: Uri) {
+    private fun runGestureRecognitionOnImage(uri: Uri) {
         setUiEnabled(false)
         backgroundExecutor = Executors.newSingleThreadScheduledExecutor()
         updateDisplayView(MediaType.IMAGE)
@@ -252,43 +238,67 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             ?.let { bitmap ->
                 fragmentGalleryBinding.imageResult.setImageBitmap(bitmap)
 
-                // Run hand landmarker on the input image
+                // Run gesture recognizer on the input image
                 backgroundExecutor.execute {
 
-                    handLandmarkerHelper =
+                    HandLandmarkerHelper =
                         HandLandmarkerHelper(
                             context = requireContext(),
                             runningMode = RunningMode.IMAGE,
                             minHandDetectionConfidence = viewModel.currentMinHandDetectionConfidence,
                             minHandTrackingConfidence = viewModel.currentMinHandTrackingConfidence,
                             minHandPresenceConfidence = viewModel.currentMinHandPresenceConfidence,
-                            maxNumHands = viewModel.currentMaxHands,
                             currentDelegate = viewModel.currentDelegate
                         )
 
-                    handLandmarkerHelper.detectImage(bitmap)?.let { result ->
-                        activity?.runOnUiThread {
-                            fragmentGalleryBinding.overlay.setResults(
-                                result.results[0],
-                                bitmap.height,
-                                bitmap.width,
-                                RunningMode.IMAGE
-                            )
+                    HandLandmarkerHelper.recognizeImage(bitmap)
+                        ?.let { resultBundle ->
+                            activity?.runOnUiThread {
 
-                            setUiEnabled(true)
-                            fragmentGalleryBinding.bottomSheetLayout.inferenceTimeVal.text =
-                                String.format("%d ms", result.inferenceTime)
-                        }
-                    } ?: run { Log.e(TAG, "Error running hand landmarker.") }
+                                fragmentGalleryBinding.overlay.setResults(
+                                    resultBundle.results[0],
+                                    bitmap.height,
+                                    bitmap.width,
+                                    RunningMode.IMAGE
+                                )
 
-                    handLandmarkerHelper.clearHandLandmarker()
+                                // This will return an empty list if there are no gestures detected
+                                if(!resultBundle.results.first().gestures().isEmpty()) {
+                                    gestureRecognizerResultsAdapter.updateResults(
+                                        resultBundle.results.first()
+                                            .gestures().first()
+                                    )
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "Hands not detected",
+                                        Toast.LENGTH_SHORT).show()
+                                }
+
+                                setUiEnabled(true)
+                                fragmentGalleryBinding.bottomSheetLayout.inferenceTimeVal.text =
+                                    String.format(
+                                        "%d ms",
+                                        resultBundle.inferenceTime
+                                    )
+                            }
+                        } ?: run {
+                        Log.e(
+                            TAG, "Error running gesture recognizer."
+                        )
+                    }
+
+                    HandLandmarkerHelper.clearGestureRecognizer()
                 }
             }
     }
 
-    private fun runDetectionOnVideo(uri: Uri) {
+    // Load and display the video.
+    private fun runGestureRecognitionOnVideo(uri: Uri) {
         setUiEnabled(false)
         updateDisplayView(MediaType.VIDEO)
+        gestureRecognizerResultsAdapter.updateResults(null)
+        gestureRecognizerResultsAdapter.notifyDataSetChanged()
 
         with(fragmentGalleryBinding.videoView) {
             setVideoURI(uri)
@@ -300,14 +310,13 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
         backgroundExecutor = Executors.newSingleThreadScheduledExecutor()
         backgroundExecutor.execute {
 
-            handLandmarkerHelper =
+            HandLandmarkerHelper =
                 HandLandmarkerHelper(
                     context = requireContext(),
                     runningMode = RunningMode.VIDEO,
                     minHandDetectionConfidence = viewModel.currentMinHandDetectionConfidence,
                     minHandTrackingConfidence = viewModel.currentMinHandTrackingConfidence,
                     minHandPresenceConfidence = viewModel.currentMinHandPresenceConfidence,
-                    maxNumHands = viewModel.currentMaxHands,
                     currentDelegate = viewModel.currentDelegate
                 )
 
@@ -316,13 +325,19 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                 fragmentGalleryBinding.progress.visibility = View.VISIBLE
             }
 
-            handLandmarkerHelper.detectVideoFile(uri, VIDEO_INTERVAL_MS)
+            HandLandmarkerHelper.recognizeVideoFile(uri, VIDEO_INTERVAL_MS)
                 ?.let { resultBundle ->
                     activity?.runOnUiThread { displayVideoResult(resultBundle) }
                 }
-                ?: run { Log.e(TAG, "Error running hand landmarker.") }
+                ?: run {
+                    activity?.runOnUiThread {
+                        fragmentGalleryBinding.progress.visibility =
+                            View.GONE
+                    }
+                    Log.e(TAG, "Error running gesture recognizer.")
+                }
 
-            handLandmarkerHelper.clearHandLandmarker()
+            HandLandmarkerHelper.clearGestureRecognizer()
         }
     }
 
@@ -345,6 +360,7 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
 
                     if (resultIndex >= result.results.size || fragmentGalleryBinding.videoView.visibility == View.GONE) {
                         // The video playback has finished so we stop drawing bounding boxes
+                        setUiEnabled(true)
                         backgroundExecutor.shutdown()
                     } else {
                         fragmentGalleryBinding.overlay.setResults(
@@ -353,8 +369,14 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                             result.inputImageWidth,
                             RunningMode.VIDEO
                         )
+                        val categories = result.results[resultIndex].gestures()
+                        if (categories.isNotEmpty()) {
+                            gestureRecognizerResultsAdapter.updateResults(
+                                categories.first()
+                            )
+                        }
 
-                        setUiEnabled(true)
+                        setUiEnabled(false)
 
                         fragmentGalleryBinding.bottomSheetLayout.inferenceTimeVal.text =
                             String.format("%d ms", result.inferenceTime)
@@ -401,15 +423,11 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             enabled
         fragmentGalleryBinding.bottomSheetLayout.presenceThresholdPlus.isEnabled =
             enabled
-        fragmentGalleryBinding.bottomSheetLayout.maxHandsPlus.isEnabled =
-            enabled
-        fragmentGalleryBinding.bottomSheetLayout.maxHandsMinus.isEnabled =
-            enabled
         fragmentGalleryBinding.bottomSheetLayout.spinnerDelegate.isEnabled =
             enabled
     }
 
-    private fun classifyingError() {
+    private fun recognitionError() {
         activity?.runOnUiThread {
             fragmentGalleryBinding.progress.visibility = View.GONE
             setUiEnabled(true)
@@ -418,18 +436,16 @@ class GalleryFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     }
 
     override fun onError(error: String, errorCode: Int) {
-        classifyingError()
         activity?.runOnUiThread {
             Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
-            if (errorCode == HandLandmarkerHelper.GPU_ERROR) {
+
+            if (errorCode == com.example.gesturerecognizer.HandLandmarkerHelper.GPU_ERROR) {
                 fragmentGalleryBinding.bottomSheetLayout.spinnerDelegate.setSelection(
-                    HandLandmarkerHelper.DELEGATE_CPU,
-                    false
+                    com.example.gesturerecognizer.HandLandmarkerHelper.DELEGATE_CPU, false
                 )
             }
         }
     }
-
     override fun onResults(resultBundle: HandLandmarkerHelper.ResultBundle) {
         // no-op
     }

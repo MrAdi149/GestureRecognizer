@@ -37,17 +37,5 @@
             android:layout_height="1dp"
             android:layout_below="@id/navigation"
             android:background="@android:color/darker_gray" />
-
-        <TextView
-            android:id="@+id/textView"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:textColor="@color/black"
-            android:layout_below="@id/view"
-            android:layout_centerHorizontal="true"
-            android:layout_marginTop="16dp"
-            android:fontFamily="@font/aclonica"
-            android:text="Your Text Here"
-            android:textSize="24sp" />
     </RelativeLayout>
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

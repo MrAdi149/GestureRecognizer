@@ -26,7 +26,6 @@ class MainActivity : AppCompatActivity() {
         activityMainBinding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(activityMainBinding.root)
 
-        textView = findViewById(R.id.textView)
         var fingerCount = 0 // Variable to keep track of finger count
 
         // Initialize GestureDetector with a SimpleOnGestureListener
